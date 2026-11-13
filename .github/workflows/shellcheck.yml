@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: |
+          for f in cf-failover.sh install.sh uninstall.sh; do
+            echo "==> bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: Run shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: .
+          additional_files: cf-failover.sh
+          severity: error
+
+      - name: Config template parses
+        run: bash -n config.example
+
+      - name: Help and version work
+        run: |
+          bash ./cf-failover.sh --version
+          bash ./cf-failover.sh --help > /dev/null
+
+      - name: Missing config exits with code 2
+        run: |
+          set +e
+          bash ./cf-failover.sh --config /nonexistent > /dev/null 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "expected exit 2, got $code"
+            exit 1
+          fi
+
+      - name: Config validation catches errors
+        run: |
+          cat > /tmp/bad.conf <<'EOF'
+          DNS_TOKEN=""
+          NODE_HOSTS=()
+          DNS_RECORDS=()
+          PROBE_MODE="tcp"
+          EOF
+          set +e
+          bash ./cf-failover.sh --config /tmp/bad.conf --check > /dev/null 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "expected exit 2, got $code"
+            exit 1
+          fi

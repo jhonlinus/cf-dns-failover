@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Cloudflare DNS failover periodically
+
+[Timer]
+# Wait until the network is up, then run every 5 minutes.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+# Run immediately if the machine was off when a run was due.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

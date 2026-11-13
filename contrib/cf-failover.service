@@ -1,0 +1,17 @@
+[Unit]
+Description=Cloudflare DNS failover
+Documentation=https://github.com/jhonlinus/cf-dns-failover
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cf-failover --config /etc/cf-failover/config --quiet
+
+# The script only needs to reach the Cloudflare API and your nodes.
+# Keep the sandbox reasonably tight.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/tmp/cf-failover /var/log

@@ -1,0 +1,149 @@
+# cf-failover configuration
+# Copy to /etc/cf-failover/config and edit. Run as root: chmod 600.
+#
+# This file is sourced by the script, so it is plain shell syntax.
+# Quoting matters: wrap values containing spaces in double quotes.
+
+# ============================================================================
+# Cloudflare
+# ============================================================================
+
+# API token with "Zone -> DNS -> Edit" permission.
+# Create one at: https://dash.cloudflare.com/profile/api-tokens
+# Scope it to the single zone you need. Do not use the Global API Key.
+#
+#   Permissions:  Zone / DNS / Edit
+#   Zone Resources: Include / Specific zone / example.com
+#
+DNS_TOKEN=""
+
+# Zone ID and record IDs.
+#
+# Each entry has the form:  "ZONE_ID|RECORD_ID|RECORD_NAME"
+# RECORD_NAME is used for logging and notifications only.
+#
+# Find them in the dashboard URL when viewing the DNS page:
+#   dash.cloudflare.com/<ZONE_ID>/example.com/dns
+#
+# Or via API:
+#   curl -s -H "Authorization: Bearer $DNS_TOKEN" \
+#     "https://api.cloudflare.com/client/v4/zones?name=example.com"
+#
+#   curl -s -H "Authorization: Bearer $DNS_TOKEN" \
+#     "https://api.cloudflare.com/client/v4/zones/<ZONE_ID>/dns_records?type=A"
+#
+DNS_RECORDS=(
+  "0000000000000000000000000000000|00000000000000000000000000000000|gw.example.com"
+)
+
+# TTL applied on every write. 1 means "automatic" (300s on Cloudflare).
+# A short TTL makes failover visible to clients sooner. 60 is a good value.
+DNS_TTL=60
+
+# Proxy flag. Leave empty to leave it untouched.
+#   1 = proxied (orange cloud)
+#   0 = DNS only  (grey cloud)
+# Proxying adds latency and is unsuitable for large media transfers, so the
+# default is to not touch it.
+DNS_PROXIED=""
+
+# ============================================================================
+# Nodes
+# ============================================================================
+
+# Probed in order, first healthy one wins. Hostnames or IPv4 addresses.
+# Put your preferred node first; the script fails back to it automatically.
+NODE_HOSTS=(
+  "frp1.example.com"
+  "frp2.example.com"
+)
+
+# ---------------------------------------------------------------------------
+# Probe mode
+# ---------------------------------------------------------------------------
+#
+# "tcp"  - only checks that the port accepts a connection.
+#          Detects: host down, power loss, broken link.
+#          Misses : frps alive but the tunnel is down (port stays open).
+#
+# "http" - sends a real request through the candidate node and checks the
+#          response. Detects both cases above, but needs a probe host that
+#          actually has a working tunnel.
+#
+# Start with "tcp". If your nodes keep the port open even when tunnels are
+# dead, switch to "http".
+PROBE_MODE="tcp"
+
+# Port used for probing. For FRP this is usually vhostHTTPPort.
+PROBE_PORT="1210"
+
+# --- Only used when PROBE_MODE="http" ---
+#
+# A hostname that resolves to a real service behind the tunnel.
+# The script overrides its resolution with the candidate IP, so DNS is
+# not involved in the probe.
+PROBE_HOST=""
+PROBE_PATH="/"
+PROBE_PROTO="http"
+
+# Optional: require this string to appear in the response body.
+# Useful to distinguish a real backend from a generic error page.
+PROBE_KEYWORD=""
+
+# Status codes treated as healthy. 502/503/404 deliberately excluded.
+OK_CODES="200 301 302 307 308 401 403"
+
+# Per-probe timeout in seconds.
+TIMEOUT=6
+
+# ============================================================================
+# Behaviour
+# ============================================================================
+
+# Consecutive rounds that must agree before DNS is rewritten.
+#
+#   cron every 1 min  -> 2 (guards against a single flaky probe)
+#   cron every 5 min  -> 1 (two probes are already 5 minutes apart)
+#
+# Raising this adds one full cron period to every switch.
+CONFIRM_TIMES=1
+
+# ============================================================================
+# Notification
+# ============================================================================
+#
+# none      disabled
+# bark      NOTIFY_URL = device key, or a full base URL for self-hosted
+# wecom     NOTIFY_URL = WeCom group bot webhook
+# dingtalk  NOTIFY_URL = DingTalk group bot webhook (keyword must be "DNS")
+# feishu    NOTIFY_URL = Feishu group bot webhook
+# pushplus  NOTIFY_URL = pushplus token
+# telegram  NOTIFY_URL = "<bot_token>|<chat_id>"
+# ntfy      NOTIFY_URL = full topic URL, e.g. https://ntfy.sh/my-topic
+# webhook   NOTIFY_URL = any endpoint accepting a JSON POST
+#
+NOTIFY_TYPE="none"
+NOTIFY_URL=""
+
+NOTIFY_TITLE="DNS Failover"
+
+# Send a message when the record is changed.
+NOTIFY_ON_SWITCH=1
+
+# Send a message when control returns to the first node.
+# Set to 0 if failback is routine for you and the messages get noisy.
+NOTIFY_ON_FAILBACK=1
+
+# Minimum seconds between repeated "all nodes down" alerts.
+ALERT_INTERVAL=1800
+
+# ============================================================================
+# Paths
+# ============================================================================
+
+STATE_DIR="/var/tmp/cf-failover"
+LOG_FILE="/var/log/cf-failover.log"
+
+# Rotate the log in place once it exceeds this size, in bytes.
+# Set to 0 to disable and rely on logrotate instead.
+LOG_MAX_BYTES=5242880

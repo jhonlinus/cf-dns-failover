@@ -1,0 +1,19 @@
+# --- Real config files, which contain tokens -----------------------------
+config
+my-config
+test-config
+*.local
+
+# --- Runtime artefacts ----------------------------------------------------
+*.log
+*.log.1
+*.state
+pending_ip
+pending_cnt
+
+# --- Editors ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

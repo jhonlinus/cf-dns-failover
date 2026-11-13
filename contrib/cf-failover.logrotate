@@ -1,0 +1,8 @@
+/var/log/cf-failover.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

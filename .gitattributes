@@ -1,0 +1,13 @@
+# Normalise line endings. Shell scripts must stay LF: a CRLF shebang
+# makes the script unrunnable on Linux ("bad interpreter").
+* text=auto eol=lf
+
+*.sh            text eol=lf
+config.example  text eol=lf
+*.md            text eol=lf
+*.yml           text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+
+# Never touch real config files if someone keeps one around.
+config          -text
