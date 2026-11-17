@@ -65,6 +65,31 @@ See [`config.example`](config.example) for the annotated template.
 | `CONFIRM_TIMES` | Rounds that must agree before switching |
 | `DNS_TTL` | TTL written with the record |
 | `NOTIFY_TYPE` | `bark`, `wecom`, `dingtalk`, `feishu`, `pushplus`, `telegram`, `ntfy`, `webhook`, `none` |
+| `NODE_LOOKUP` | `system` or `authoritative` |
+| `FLUSH_DNS_CACHE` | `auto`, `always` or `never` |
+
+### Hostname nodes can go stale
+
+A hostname in `NODE_HOSTS` is re-resolved on every run, and the answer is only
+as fresh as the slowest cache in the chain. That is not a "failover is late"
+problem: the script probes an address that is no longer in use, decides the
+node is down, and writes that dead address into DNS.
+
+Two ways out. Literal IPs remove resolution entirely. Or:
+
+```bash
+NODE_LOOKUP="authoritative"
+```
+
+This walks up to the zone's own nameserver and queries it with `+norecurse`,
+so no cache gets a vote. Costs a few extra DNS round trips, needs `dig`, and
+falls back to `system` with a warning if the authoritative server is
+unreachable.
+
+`FLUSH_DNS_CACHE` only clears this machine — `resolvectl`, `systemd-resolve`,
+`nscd`, macOS `mDNSResponder`. It cannot clear your ISP's recursive resolver,
+and it cannot clear `/etc/hosts`, which never expires. If the stale answer is
+upstream, use `authoritative`.
 
 ### Choosing a probe mode
 

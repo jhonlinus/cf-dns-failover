@@ -53,10 +53,68 @@ DNS_PROXIED=""
 
 # Probed in order, first healthy one wins. Hostnames or IPv4 addresses.
 # Put your preferred node first; the script fails back to it automatically.
+#
+# Prefer literal IPv4 addresses. A hostname is resolved on every run, and that
+# adds two failure modes instead of removing one:
+#
+#   1. Staleness. If the node's A record changes and this machine still answers
+#      with the old address, the script probes the dead address, concludes the
+#      node is down and fails over for no reason. How long that lasts depends
+#      on the cache: up to the record's TTL, or forever if the name is pinned
+#      in /etc/hosts.
+#   2. Misdetection. A hijacked or broken resolver makes every node look dead,
+#      which is the one case where the script refuses to act at all.
+#
+# Literal IPs skip resolution entirely. The only cost is that you must edit
+# this file when a node's public IP really does change.
 NODE_HOSTS=(
   "frp1.example.com"
   "frp2.example.com"
 )
+
+# Optional: DNS server used to turn a hostname above into an address.
+# Empty means "ask the system" (getent -> dig -> nslookup).
+#
+# Setting this to an IP bypasses getent, and therefore bypasses nscd,
+# systemd-resolved and /etc/hosts. That is the only way to make sure a stale
+# hosts entry cannot shadow the real answer. It does not defeat the recursive
+# resolver's own cache - that honours the record's TTL, as DNS is supposed to.
+#
+# Only matters when NODE_HOSTS contains hostnames. Ignored for literal IPs.
+#NODE_RESOLVER="1.1.1.1"
+
+# How a hostname above becomes an address.
+#
+#   "system"        - ask the local resolver (getent -> dig -> nslookup)
+#   "authoritative" - ask the zone's own nameserver directly, bypassing caches
+#
+# Use "authoritative" if you have seen the script act on an outdated address:
+# the record was changed at the provider, but this host kept resolving the old
+# one and the script probed a dead IP. "system" lets every cache in the chain
+# answer, and each of those only expires on TTL.
+#
+# "authoritative" walks up the parent labels to find the zone's NS and queries
+# it with +norecurse, so the answer is whatever the zone publishes right now.
+# Costs a couple of extra round trips per run. Falls back to "system" with a
+# warning if the authoritative server cannot be reached.
+#
+# Requires dig (bind-utils on RHEL, dnsutils on Debian/Ubuntu).
+NODE_LOOKUP="system"
+
+# Flush this machine's DNS cache before resolving.
+#
+#   "auto"   - try, stay quiet if it fails (default)
+#   "always" - try, warn when it fails
+#   "never"  - do not touch resolver caches
+#
+# Understand what this can and cannot do. It clears nscd, systemd-resolved and
+# (on macOS) mDNSResponder. It does NOT clear the recursive resolver your ISP
+# or router runs, and it does NOT clear an /etc/hosts entry - that one never
+# expires. If the stale answer lives upstream, flushing here will not help;
+# NODE_LOOKUP="authoritative" is the setting that does.
+#
+# Needs root, which cron already provides. Ignored for literal IPs.
+FLUSH_DNS_CACHE="auto"
 
 # ---------------------------------------------------------------------------
 # Probe mode

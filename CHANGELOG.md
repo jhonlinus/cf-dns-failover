@@ -2,6 +2,23 @@
 
 所有重要变更记录在此文件。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.1] - 2026-11-17
+
+解决节点用域名时可能读到过期地址的问题。旧版本只按系统解析器取 IP，一旦解析链路上任何一层缓存返回旧值，脚本会去探测一个已经失效的地址，进而误判节点故障、把旧 IP 写回 DNS。
+
+### 新增
+
+- `NODE_LOOKUP`：`system`（默认，走本机解析器）或 `authoritative`（直连片区权威 NS，`+norecurse`，绕开所有缓存）。权威解析失败时自动回落并告警
+- `FLUSH_DNS_CACHE`：`auto`（默认）/ `always` / `never`，解析前清本机缓存（`resolvectl`、`systemd-resolve`、`nscd`、macOS `mDNSResponder`）。仅在节点列表含域名时触发
+- `NODE_RESOLVER`：指定解析器地址，跳过 `getent`，从而绕开 NSS、`systemd-resolved` 和 `/etc/hosts`
+
+### 修复
+
+- **解析失败时把解析器 IP 当成节点 IP**：`dig` 无结果回落到 `nslookup` 时，输出里第一段就是解析器自身地址，被当作解析结果返回，随后被探测甚至写入 DNS。现在按行提取 IPv4、过滤 `#53` 端口后缀，并排除本机已知解析器
+- **日志混入返回值**：`get_record_ip` 以 stdout 返回数据，内部错误日志在 `--color` 下会写进同一路 stdout，被调用方当成记录值捕获。错误改为写 stderr
+- `nslookup` 输出解析：改为正则提取地址，兼容本地化输出（`服务器` / `地址`）
+
+
 ## [1.0.0] - 2026-11-13
 
 首个开源版本。从个人自用脚本重写而来，配置完全外置。

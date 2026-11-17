@@ -133,7 +133,29 @@ chmod +x cf-failover.sh
 | `CONFIRM_TIMES` | `1` | 连续几轮一致才切换 |
 | `DNS_TTL` | `60` | 写入时设置的 TTL，`1` 表示自动（300s） |
 | `DNS_PROXIED` | 空 | 留空不动，`1` 开代理，`0` 关闭 |
+| `NODE_LOOKUP` | `system` | `system` 或 `authoritative`。节点写成域名且换过 IP 时用后者，见下节 |
+| `NODE_RESOLVER` | 空 | 指定解析器 IP，跳过 `getent` 以绕开 `/etc/hosts` |
+| `FLUSH_DNS_CACHE` | `auto` | `auto` / `always` / `never`，解析前清本机缓存 |
 | `NOTIFY_TYPE` | `none` | 通知渠道 |
+
+#### 节点用域名还是 IP
+
+`NODE_HOSTS` 里写域名会**每轮重新解析**，而解析结果可能不是最新的：链路里任何一层缓存都只按 TTL 过期，递归解析器不守规矩时旧答案可能多留很久。后果不是"切换慢"，而是**探到一个已经废掉的地址，判定节点故障，再把旧 IP 写回 DNS**。
+
+两种情况都会发生：
+
+- 节点 IP 换过一次，本机还在用旧值 → 脚本把旧 IP 写回去，服务直接断
+- 域名被错误解析（劫持、hosts 残留）→ 所有节点看起来都挂了，脚本拒绝动作
+
+写死 IP 最省事，也没有解析这一步。非要用域名，就打开权威解析：
+
+```bash
+NODE_LOOKUP="authoritative"
+```
+
+它会沿着父级往上找到该域名所在区的 NS，用 `+norecurse` 直接问，绕开全部缓存（包括 ISP 的递归解析器）。代价是每轮多几次 DNS 往返，需要 `dig`；权威服务器不可达时自动回落并告警。
+
+`FLUSH_DNS_CACHE` 只是清本机（`resolvectl` / `systemd-resolve` / `nscd` / macOS `mDNSResponder`），清不掉上游递归解析器，也清不掉 `/etc/hosts`。真遇到旧答案，它通常救不了场，`authoritative` 才能。
 
 `DNS_RECORDS` 支持多条，节点列表是共用的：
 

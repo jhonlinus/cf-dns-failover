@@ -55,6 +55,41 @@ DNS_RECORDS=(
 
 ## 探测阶段
 
+### 日志里的节点 IP 不是最新的，脚本准备切到旧地址
+
+典型症状：域名在 Cloudflare 后台已经改成新 IP，脚本却一直按旧 IP 探测，判定节点故障，然后准备把旧 IP 写回记录。
+
+先确认权威值：
+
+```bash
+dig +short NS example.com
+# 拿到 NS 后直接问它
+dig +short +norecurse A frp1.example.com @ariella.ns.cloudflare.com
+```
+
+再逐层对比，看出旧值是卡在哪一层：
+
+```bash
+dig +short A frp1.example.com            # 本机解析器
+dig +short A frp1.example.com @223.5.5.5 # 公共递归
+```
+
+**如果只有权威层是新值**，说明旧答案在递归解析器缓存里。清本机没用，`FLUSH_DNS_CACHE` 也清不掉上游。打开权威解析：
+
+```bash
+NODE_LOOKUP="authoritative"
+```
+
+**如果权威层也是旧值**，那不是缓存问题，是记录没改成功，回 Cloudflare 后台确认，注意别改错子域或改到通配符之外的副本。
+
+**`FLUSH_DNS_CACHE` 什么时候有用**：只在旧值确实存在于本机缓存时。它需要 root 且本机有 `resolvectl`、`systemd-resolve` 或 `nscd`；群晖这类没有 systemd 的系统三者都没有，日志会明确告警。
+
+**`/etc/hosts` 是个例外**：那里写死的条目永远不会过期，任何 flush 都无效，`system` 模式下 `getent` 会一直优先用它。检查：
+
+```bash
+grep -i example.com /etc/hosts
+```
+
 ### 日志里一直是「所有节点均不可用」，但服务明明是好的
 
 按顺序排查：

@@ -13,7 +13,7 @@
 #
 set -uo pipefail
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.0.1"
 readonly PROG_NAME="cf-failover"
 readonly DEFAULT_CONFIG="/etc/cf-failover/config"
 
@@ -40,6 +40,50 @@ declare -a DNS_RECORDS=()
 # --- Nodes ------------------------------------------------------------------
 # Probed in order. First healthy one wins. Accepts hostnames or plain IPv4.
 declare -a NODE_HOSTS=()
+
+# Optional DNS server used to turn a hostname in NODE_HOSTS into an IPv4
+# address, e.g. "1.1.1.1" or "223.5.5.5". Empty means "ask the system".
+#
+# The resolver is what makes a hostname entry stale. getent goes through glibc
+# and therefore through nscd, systemd-resolved and /etc/hosts; an /etc/hosts
+# entry never expires at all. Setting this to an IP skips getent entirely and
+# queries that server directly, so a stale hosts file cannot shadow the answer.
+#
+# The probe itself never uses DNS: curl --resolve pins the address, so whatever
+# the resolver returns only decides *which* address gets probed, not whether the
+# probe is accurate.
+#
+# Writing literal IPs in NODE_HOSTS removes this whole class of problem.
+: "${NODE_RESOLVER:=}"
+
+# How a hostname in NODE_HOSTS becomes an address.
+#
+#   system        - ask the local resolver (getent -> dig -> nslookup)
+#   authoritative - ask the zone's own nameserver directly, with +norecurse
+#
+# "system" can hand back a stale address: every cache between here and the
+# authoritative server is allowed to answer, and each one only expires on TTL.
+# A recursive resolver that ignores or over-caches the TTL shows up exactly as
+# "the record changed upstream but this host still sees the old address".
+#
+# "authoritative" skips all of that: it walks up to the zone's NS and asks it
+# point blank, so the answer is whatever the zone currently publishes. Costs a
+# couple of extra DNS round trips per run, which at a 5 minute interval is
+# nothing. Falls back to "system" if the authoritative server is unreachable.
+: "${NODE_LOOKUP:=system}"
+
+# Flush the local DNS cache before resolving NODE_HOSTS hostnames.
+#
+# This only clears caches on this machine: nscd, systemd-resolved, or Windows'
+# resolver cache. It cannot clear the recursive resolver your ISP or router
+# runs, and it cannot clear an /etc/hosts entry - that one never expires.
+#
+#   auto   - try to flush, stay quiet on failure (default)
+#   always - flush and warn loudly when it does not work
+#   never  - do not touch the resolver caches
+#
+# Only has an effect when NODE_HOSTS contains hostnames.
+: "${FLUSH_DNS_CACHE:=auto}"
 
 # tcp  = connect to PROBE_PORT only. Detects a dead host, not a dead tunnel.
 # http = request PROBE_HOST through the candidate. Detects both.
@@ -178,12 +222,65 @@ is_ipv4() {
   [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
 }
 
+# Nameservers this host would use by default, one per line.
+system_resolvers() {
+  awk '/^[[:space:]]*nameserver[[:space:]]/{print $2}' /etc/resolv.conf 2>/dev/null
+}
+
+# Keep the last IPv4 in a stream of dig/nslookup output.
+#
+# dig +short prints bare addresses; nslookup prints "Address: 1.2.3.4", and
+# both print the resolver's own address before the answer. Leaving the prefix
+# in place would reject every nslookup result, so the address is pulled out
+# with a regex instead of being matched against the whole line.
+#
+# Two guards, because a failed lookup yields the resolver's address and that
+# address would then be probed and written to DNS:
+#   - lines carrying a port suffix ("127.0.0.53#53") are the resolver itself
+#   - anything listed in $1 (space separated) is skipped
+# The last remaining candidate wins: with nslookup the answer comes last.
+only_ipv4() {
+  local exclude=" ${1:-} " line cand last=""
+  while IFS= read -r line; do
+    case "$line" in *"#"*) continue ;; esac
+    if [[ "$line" =~ ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) ]]; then
+      cand="${BASH_REMATCH[1]}"
+    else
+      continue
+    fi
+    [[ "$exclude" == *" $cand "* ]] && continue
+    last="$cand"
+  done
+  [[ -n "$last" ]] && printf '%s' "$last"
+}
+
 # Resolve a hostname to IPv4. Plain IPs pass through untouched.
+#
+# When NODE_RESOLVER is set, ask that server directly with dig/nslookup and
+# never touch getent: getent resolves through glibc's NSS stack, which means
+# nscd, systemd-resolved and /etc/hosts all get a say. A hosts entry in
+# particular never expires, so a stale one would win forever.
 resolve_ip() {
-  local host="$1" ip=""
+  local host="$1" ip="" skip
 
   if is_ipv4 "$host"; then
     printf '%s' "$host"
+    return 0
+  fi
+
+  # Nothing in this function logs: its stdout is the return value, so a log
+  # line would be captured as the address by the caller.
+  if [[ -n "$NODE_RESOLVER" ]]; then
+    skip="$NODE_RESOLVER $(system_resolvers | tr '\n' ' ')"
+    if command -v dig >/dev/null 2>&1; then
+      ip=$(dig +short +time=3 +tries=1 A "$host" "@${NODE_RESOLVER}" 2>/dev/null \
+           | only_ipv4 "$skip")
+    fi
+    if [[ -z "$ip" ]] && command -v nslookup >/dev/null 2>&1; then
+      ip=$(nslookup -timeout=3 "$host" "$NODE_RESOLVER" 2>/dev/null \
+           | only_ipv4 "$skip")
+    fi
+    printf '%s' "$ip"
     return 0
   fi
 
@@ -192,14 +289,77 @@ resolve_ip() {
   fi
 
   if [[ -z "$ip" ]] && command -v dig >/dev/null 2>&1; then
-    ip=$(dig +short A "$host" 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+    ip=$(dig +short A "$host" 2>/dev/null | only_ipv4 "$(system_resolvers | tr '\n' ' ')")
   fi
 
   if [[ -z "$ip" ]] && command -v nslookup >/dev/null 2>&1; then
-    ip=$(nslookup "$host" 2>/dev/null | awk '/^Address: /{print $2}' | tail -1)
+    ip=$(nslookup "$host" 2>/dev/null \
+         | only_ipv4 "$(system_resolvers | tr '\n' ' ')")
   fi
 
   printf '%s' "$ip"
+}
+
+# Drop every cache this machine controls. Prints what it managed to flush, so
+# the caller can tell "nothing to flush" from "flushing failed".
+#
+# Deliberately not advertised as a fix for staleness: an upstream recursive
+# resolver keeps its own copy until the TTL expires, and /etc/hosts never
+# expires at all. Neither is reachable from here.
+flush_dns_cache() {
+  local did="" sys
+
+  sys=$(uname -s 2>/dev/null || echo unknown)
+  if [[ "$sys" == "Darwin" ]]; then
+    { dscacheutil -flushcache >/dev/null 2>&1 \
+      && killall -HUP mDNSResponder >/dev/null 2>&1; } && did="mDNSResponder"
+    printf '%s' "$did"
+    return 0
+  fi
+
+  if command -v resolvectl >/dev/null 2>&1; then
+    { resolvectl flush-caches >/dev/null 2>&1; } && did="resolvectl"
+  elif command -v systemd-resolve >/dev/null 2>&1; then
+    { systemd-resolve --flush-caches >/dev/null 2>&1; } && did="systemd-resolve"
+  fi
+
+  if command -v nscd >/dev/null 2>&1; then
+    { nscd -i hosts >/dev/null 2>&1; } && did="${did:+${did}, }nscd"
+  fi
+
+  printf '%s' "$did"
+}
+
+# Ask the zone's own nameserver for the record, bypassing every cache in
+# between. Walks up parent labels until it finds a delegation that answers.
+#
+# Every nameserver in the delegation is tried, not just the first: Cloudflare
+# hands out two, and either one can be slow or unreachable from a given
+# network at a given moment. Falling back to the system resolver on the first
+# timeout would quietly reintroduce the stale answer this mode exists to avoid.
+resolve_authoritative() {
+  local host="$1"
+  local zone="$host" ns ip i
+
+  command -v dig >/dev/null 2>&1 || return 0
+
+  for i in 1 2 3; do
+    zone="${zone#*.}"
+    [[ "$zone" == *.* ]] || break
+
+    while IFS= read -r ns; do
+      [[ -z "$ns" ]] && continue
+      ip=$(dig +short +norecurse +time=3 +tries=1 A "$host" \
+           "@${ns%.}" 2>/dev/null | only_ipv4)
+      if [[ -n "$ip" ]]; then
+        printf '%s' "$ip"
+        return 0
+      fi
+    done < <(dig +short +time=3 +tries=1 NS "$zone" 2>/dev/null \
+             | grep -E '^[A-Za-z0-9._-]+\.$' | head -3)
+  done
+
+  return 0
 }
 
 have_timeout() {
@@ -290,6 +450,35 @@ validate_config() {
     errors=$((errors + 1))
   fi
 
+  if [[ -n "$NODE_RESOLVER" ]] && ! is_ipv4 "$NODE_RESOLVER"; then
+    log error "NODE_RESOLVER 必须是 IPv4 地址（如 1.1.1.1），当前：${NODE_RESOLVER}"
+    errors=$((errors + 1))
+  fi
+
+  case "$NODE_LOOKUP" in
+    system|authoritative) ;;
+    *) log error "NODE_LOOKUP 只能是 system 或 authoritative，当前：${NODE_LOOKUP}"
+       errors=$((errors + 1)) ;;
+  esac
+
+  case "$FLUSH_DNS_CACHE" in
+    auto|always|never) ;;
+    *) log error "FLUSH_DNS_CACHE 只能是 auto、always 或 never，当前：${FLUSH_DNS_CACHE}"
+       errors=$((errors + 1)) ;;
+  esac
+
+  if [[ "$NODE_LOOKUP" == "authoritative" ]] && ! command -v dig >/dev/null 2>&1; then
+    log error "NODE_LOOKUP=authoritative 需要 dig（bind-utils / dnsutils）"
+    errors=$((errors + 1))
+  fi
+
+  if [[ -n "$NODE_RESOLVER" ]] \
+     && ! command -v dig >/dev/null 2>&1 \
+     && ! command -v nslookup >/dev/null 2>&1; then
+    log error "设置了 NODE_RESOLVER，但系统没有 dig 或 nslookup 可用"
+    errors=$((errors + 1))
+  fi
+
   if (( errors > 0 )); then
     exit 2
   fi
@@ -369,15 +558,17 @@ probe() {
 # Cloudflare API
 # ============================================================================
 
+# Diagnostics go to stderr: get_record_ip returns its result on stdout, so a
+# log line written there would be captured as the record's value.
 cf_api_error() {
   local resp="$1" scope="$2" msg
   if [[ -z "$resp" ]]; then
-    log error "${scope}：API 无响应（网络或 DNS 异常）"
+    log error "${scope}：API 无响应（网络或 DNS 异常）" >&2
     return 0
   fi
   if ! printf '%s' "$resp" | grep -q '"success":true'; then
     msg=$(printf '%s' "$resp" | grep -o '"message":"[^"]*"' | head -1)
-    log error "${scope}：${msg:-未知错误}"
+    log error "${scope}：${msg:-未知错误}" >&2
     return 0
   fi
 }
@@ -401,7 +592,7 @@ get_record_ip() {
   if is_ipv4 "$ip"; then
     printf '%s' "$ip"
   else
-    log error "读取记录 ${rec} 失败：响应中没有 IPv4（记录类型可能不是 A）"
+    log error "读取记录 ${rec} 失败：响应中没有 IPv4（记录类型可能不是 A）" >&2
   fi
 }
 
@@ -587,13 +778,32 @@ read_current_ips() {
   return 0
 }
 
+# True when at least one node is a hostname, i.e. resolution actually happens.
+needs_resolution() {
+  local h
+  for h in "${NODE_HOSTS[@]}"; do
+    is_ipv4 "$h" || return 0
+  done
+  return 1
+}
+
 select_node() {
   local h ip
   SELECTED_IP=""
   SELECTED_HOST=""
-
   for h in "${NODE_HOSTS[@]}"; do
-    ip="$(resolve_ip "$h")"
+    if is_ipv4 "$h"; then
+      ip="$h"
+    elif [[ "$NODE_LOOKUP" == "authoritative" ]]; then
+      ip="$(resolve_authoritative "$h")"
+      if [[ -z "$ip" ]]; then
+        log warn "权威解析无结果，回落到系统解析：${h}"
+        ip="$(resolve_ip "$h")"
+      fi
+    else
+      ip="$(resolve_ip "$h")"
+    fi
+
     if [[ -z "$ip" ]]; then
       log warn "解析失败：${h}"
       continue
@@ -615,7 +825,7 @@ run() {
   local -a names=()
   local -a zones=()
   local -a recs=()
-  local i z r n need_change=0 pending cnt
+  local i z r n need_change=0 pending cnt flushed
   local -a changed=()
 
   rotate_log
@@ -628,6 +838,16 @@ run() {
   done
 
   log info "开始检测 v${VERSION}｜模式=${PROBE_MODE}｜节点=${#NODE_HOSTS[@]}｜记录=${#DNS_RECORDS[@]}"
+
+  # Only worth doing when a node is named by hostname; literal IPs never ask DNS.
+  if [[ "$FLUSH_DNS_CACHE" != "never" ]] && needs_resolution; then
+    flushed="$(flush_dns_cache)"
+    if [[ -n "$flushed" ]]; then
+      log debug "已清除本地 DNS 缓存：${flushed}"
+    elif [[ "$FLUSH_DNS_CACHE" == "always" ]]; then
+      log warn "未能清除本地 DNS 缓存（需要 root，或本机没有 systemd-resolved / nscd）"
+    fi
+  fi
 
   read_current_ips cur_ips || exit 1
 
