@@ -36,6 +36,7 @@
 - **dry-run。** 完整跑一遍探测和决策，但不写 DNS、不发通知。
 - **内置并发锁。** 用 `flock` 防止 cron 重叠执行。
 - **零依赖。** 只用 `bash` + `curl`，没有 Python、没有编译、没有容器。
+- **可选的网页面板。** `dashboard/` 里的 `cfdash` 把日志读成一张实时看板：当前生效 IP、各节点健康、切换时间线。面板只读，不改你的配置。（[看看长什么样](#监控面板cfdash)）
 
 ## 工作原理
 
@@ -268,6 +269,64 @@ sudo systemctl enable --now cf-failover.timer
 延迟 = 探测间隔 × `CONFIRM_TIMES` + DNS TTL 生效时间。
 
 **防抖的必要性和执行频率成反比。** 一分钟跑一次时，两次探测只隔 60 秒，运营商抖动很容易骗过它；5 分钟跑一次时，两次探测已经隔了 5 分钟，能持续 5 分钟的"抖动"已经是真故障了，二次确认纯属多等一个周期。
+
+## 监控面板（cfdash）
+
+脚本本身没有界面，状态只能 `tail -f` 日志。`dashboard/` 提供一个零依赖面板：一个 `cfdash.py`（Python 3.8+ 标准库）+ 一个 `index.html`，把日志读成看板。
+
+![cfdash](docs/screenshot.png)
+
+**它能回答的问题**
+
+- 现在 DNS 上是哪个 IP？和日志里最后一次观测的一致吗？（面板会实时调 Cloudflare API 校验，不一致直接标红）
+- 哪个节点在生效？是主节点还是备用节点？连续多少轮没出过事？
+- 24 小时里跑了几轮、失败几轮、切换几次？下次检测大概什么时候？
+- 昨天半夜那次切换，是从哪个 IP 到哪个 IP？
+
+**它不做什么**
+
+- 不自己探测、不自己写 DNS —— 探测和切换永远由 `cf-failover` 完成，面板只是另一个视图。
+- 不写任何配置。读 `/etc/cf-failover/config` 或 1Panel 里那份内联脚本，token 一律打码后才进浏览器。
+
+### 启动
+
+```bash
+# 只监听本机，8077 端口
+python3 dashboard/cfdash.py
+
+# 给外网用：自己加一层带认证的反代，或者直接开 Basic 认证
+python3 dashboard/cfdash.py --bind 0.0.0.0 --auth admin:你的密码
+
+# 只读模式：页面上不出现「立即检测」按钮
+python3 dashboard/cfdash.py --no-run
+```
+
+打开 `http://127.0.0.1:8077/`。
+
+它自动在下面这些位置找安装：
+
+| 形态 | 配置 | 日志 |
+|---|---|---|
+| 仓库版（推荐） | `/etc/cf-failover/config` | `/var/log/cf-failover.log` |
+| 1Panel 计划任务版 | `/opt/1panel/task/shell/frp-dns-callback/frp-dns-callback.sh` | 同上 |
+
+找不到可以显式指定：`--config /path/to/config --log /path/to/log`。
+
+### 飞牛 fnOS 应用包
+
+`fnos/` 是打包好的飞牛应用工程，产物 `fnos/dist/cfdns-1.0.0.fpk`：
+
+1. 应用中心 → 设置 → 手动安装应用 → 选 `.fpk`
+2. 桌面上出现「DNS 切换面板」，点开直接在桌面内打开（走统一网关 `/app/cfdns/`，不占端口）
+
+面板以 root 运行 —— 它要读 `600` 权限的配置、写 `/var/log`，并且「立即检测」会真的跑一轮脚本。不想给这个权限就装纯查看版：改 `cmd/main` 加 `--no-run` 重新打包。细节见 [`fnos/README.md`](fnos/README.md)。
+
+### 安全
+
+- 默认只绑 `127.0.0.1`，**不要直接把 8077 暴露到公网**：面板能触发 root 权限的脚本执行。
+- 要公网访问，务必加认证（`--auth` 或反代 Basic/OAuth），并考虑 `--no-run`。
+- 「立即检测」会先弹确认框，并提供 dry-run 选项：试运行只探测、不写 DNS。
+- token 只在服务端使用，接口返回里一律 `abcd****wxyz` 形式。
 
 ## 命令行
 

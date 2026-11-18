@@ -36,6 +36,8 @@ latter — no proxy, DNS records only, so **zero added latency** on the normal p
 - `--dry-run` to see decisions without touching anything.
 - Built-in `flock` so overlapping cron runs are harmless.
 - No dependencies beyond `bash` and `curl`.
+- Optional web dashboard (`dashboard/`) that turns the log into a live view —
+  read-only, never rewrites your config. ([screenshot](#dashboard-optional))
 
 ## Quick start
 
@@ -117,6 +119,39 @@ port checking.
 Pick `CONFIRM_TIMES` to match the interval: `2` at one minute, `1` at five.
 Two probes sixty seconds apart can be fooled by a blip; two probes five
 minutes apart cannot.
+
+## Dashboard (optional)
+
+The script has no UI — normally you watch it with `tail -f`. `dashboard/` adds a
+zero-dependency panel: one `cfdash.py` (Python 3.8+, stdlib only) plus one
+`index.html`, both read nothing but your existing config, state files and log.
+
+![cfdash](docs/screenshot.png)
+
+- Shows the IP currently in DNS, verified against the Cloudflare API (mismatch is flagged)
+- Per-node health, which node is active, whether it is the primary one
+- 24h round count, failures, switches; when the next run is due
+- A timeline of every probe round, with switch markers
+- Event list and full log, both filterable
+- One button to run a check now — with a dry-run option
+
+```bash
+python3 dashboard/cfdash.py                 # 127.0.0.1:8077
+python3 dashboard/cfdash.py --auth u:p      # add Basic auth
+python3 dashboard/cfdash.py --no-run        # read-only, hide the trigger button
+```
+
+It auto-detects both layouts: `/etc/cf-failover/config` (this repo) and the
+older inline-config script installed by a 1Panel cron job. Override with
+`--config` / `--log` if yours lives elsewhere.
+
+A ready-made **fnOS (FeiNiu) package** is in `fnos/` — install it from the app
+center and it appears on the desktop, served through `/app/cfdns/` without
+occupying a port. See [`fnos/README.md`](fnos/README.md).
+
+> The dashboard binds to `127.0.0.1` by default and can execute the script as
+> root. Put authentication in front of it before exposing it, and consider
+> `--no-run`.
 
 ## Security
 

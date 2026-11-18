@@ -1,0 +1,17 @@
+appname               = cfdns
+version               = 1.0.0
+display_name          = DNS 切换面板
+desc                  = <h2>DNS 切换面板</h2><p>cf-failover 的网页控制台：查看当前生效 IP、各节点健康、切换时间线与日志，可手动触发一轮检测。数据直接读系统的 cf-failover 配置、状态文件与日志，不重复实现探测逻辑。</p>
+platform              = x86
+source                = thirdparty
+maintainer            = Linus
+maintainer_url        = https://github.com/jhonlinus/cf-dns-failover
+distributor           = Linus
+distributor_url       = https://github.com/jhonlinus/cf-dns-failover
+install_type          =
+ctl_stop              = true
+checkport             = false
+service_port          = 8077
+micro_app             = true
+desktop_uidir         = ui
+desktop_applaunchname = cfdns.Application

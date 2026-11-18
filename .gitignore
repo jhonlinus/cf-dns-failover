@@ -4,12 +4,24 @@ my-config
 test-config
 *.local
 
+# 打包工程里这两个「config」是应用清单，不是用户配置，必须入库
+!fnos/app/ui/config
+!fnos/config/
+!fnos/config/**
+
+# --- Local scratch (demo data, screenshots of the panel taken from real logs)
+.sample/
+
 # --- Runtime artefacts ----------------------------------------------------
 *.log
 *.log.1
 *.state
 pending_ip
 pending_cnt
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.pyc
 
 # --- Editors ---------------------------------------------------------------
 .vscode/

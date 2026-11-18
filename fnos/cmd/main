@@ -1,0 +1,49 @@
+#!/bin/bash
+# 生命周期脚本：start | stop | status（必须 LF 换行）
+# 运行期变量：TRIM_APPDEST=程序目录  TRIM_PKGVAR=运行时数据（升级保留）
+#
+# 统一网关：ui/config 里写了 gatewaySocket: "app.sock" 时，
+# 应用必须在 $TRIM_APPDEST/app.sock 上监听 HTTP，飞牛桌面 / 外网
+# 才会通过 /app/<appname>/ 访问到它（不占端口）。应用不支持 UDS 就删掉 --sock。
+
+APP_DIR="${TRIM_APPDEST}"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/cfdns/var}"
+LOG="$VAR_DIR/cfdns.log"
+PIDFILE="$VAR_DIR/cfdns.pid"
+PORT="${CFDNS_PORT:-8077}"
+SOCK="${CFDNS_SOCK:-${APP_DIR}/app.sock}"
+export CFDNS_DATA="${CFDNS_DATA:-$VAR_DIR}"
+
+running() {
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+}
+
+case "$1" in
+start)
+    mkdir -p "$VAR_DIR"
+    running && exit 0
+    cd "$APP_DIR" || exit 1
+    # 面板只读系统上的 cf-failover 配置/状态/日志，不自己写 DNS
+    nohup python3 "$APP_DIR/server/cfdash.py" --sock "$SOCK" >> "$LOG" 2>&1 &
+    echo $! > "$PIDFILE"
+    sleep 1
+    running && exit 0
+    exit 5
+    ;;
+stop)
+    if running; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+        for i in $(seq 1 20); do running || break; sleep 0.2; done
+        running && kill -9 "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+    exit 0
+    ;;
+status)
+    running && exit 0
+    exit 3
+    ;;
+*)
+    exit 1
+    ;;
+esac
