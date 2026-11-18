@@ -13,7 +13,7 @@
 #
 set -uo pipefail
 
-readonly VERSION="1.0.1"
+readonly VERSION="1.0.2"
 readonly PROG_NAME="cf-failover"
 readonly DEFAULT_CONFIG="/etc/cf-failover/config"
 
